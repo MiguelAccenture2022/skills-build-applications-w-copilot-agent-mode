@@ -46,8 +46,41 @@ export async function listTeams() {
   return Team.find().lean();
 }
 
-export async function createTeam(_input: unknown) {
-  throw Object.assign(new Error('Team validation is not implemented yet'), { status: 501 });
+export async function createTeam(input: unknown) {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw serviceError('Team details are required', 400);
+  }
+
+  const { name, mascot, members } = input as Record<string, unknown>;
+  if (
+    typeof name !== 'string' || name.trim().length === 0 ||
+    typeof mascot !== 'string' || mascot.trim().length === 0 ||
+    (members !== undefined && (!Array.isArray(members) || !members.every((member) => typeof member === 'string' && Types.ObjectId.isValid(member))))
+  ) {
+    throw serviceError('Team details are invalid', 400);
+  }
+
+  const memberIds = [...new Set((members as string[] | undefined ?? []).map((memberId) => memberId.toLowerCase()))]
+    .map((memberId) => new Types.ObjectId(memberId));
+  const users = await User.find({ _id: { $in: memberIds } }).select('_id team').lean();
+  if (users.length !== memberIds.length) {
+    throw serviceError('One or more team members were not found', 404);
+  }
+
+  const previousTeamIds = [...new Set(users.flatMap((user) => user.team ? [user.team] : []))];
+  if (previousTeamIds.length > 0) {
+    await Team.updateMany(
+      { _id: { $in: previousTeamIds } },
+      { $pull: { members: { $in: memberIds } } },
+      { runValidators: true },
+    );
+  }
+
+  const team = await Team.create({ name: name.trim(), mascot: mascot.trim(), members: memberIds });
+  if (memberIds.length > 0) {
+    await User.updateMany({ _id: { $in: memberIds } }, { $set: { team: team._id } }, { runValidators: true });
+  }
+  return team;
 }
 
 export async function getLeaderboard() {
